@@ -1,20 +1,14 @@
 package main
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"net/http"
-	"net/url"
 	"os"
-	"strings"
+	"path/filepath"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
-	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/joho/godotenv"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
@@ -22,32 +16,36 @@ import (
 	kaniko "github.com/drone/drone-kaniko"
 	"github.com/drone/drone-kaniko/pkg/artifact"
 	"github.com/drone/drone-kaniko/pkg/docker"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/crane"
 )
 
 const (
-	clientIdEnv        string = "AZURE_CLIENT_ID"
-	clientSecretKeyEnv string = "AZURE_CLIENT_SECRET"
-	dockerConfigPath   string = "/kaniko/.docker"
-	tenantKeyEnv       string = "AZURE_TENANT_ID"
-	certPathEnv        string = "AZURE_CLIENT_CERTIFICATE_PATH"
-	defaultDigestFile  string = "/kaniko/digest-file"
-	finalUrl           string = "https://portal.azure.com/#view/Microsoft_Azure_ContainerRegistries/TagMetadataBlade/registryId/"
+	dockerConfigPath string = "/kaniko/.docker"
+	// GAR JSON key file path
+	garKeyPath     string = "/kaniko/config.json"
+	garEnvVariable string = "GOOGLE_APPLICATION_CREDENTIALS"
+
+	defaultDigestFile string = "/kaniko/digest-file"
 )
 
 var (
-	ACRCertPath   = "/kaniko/acr-cert.pem"
-	pluginVersion = "unknown"
-	username      = "00000000-0000-0000-0000-000000000000"
-	maxPageCount  = 1000 // maximum count of pages to cycle through before we break out
+	version = "unknown"
 )
 
 func main() {
-	// TODO Add the env file functionality
+	// Load env-file if it exists first
+	if env := os.Getenv("PLUGIN_ENV_FILE"); env != "" {
+		if err := godotenv.Load(env); err != nil {
+			logrus.Fatal(err)
+		}
+	}
+
 	app := cli.NewApp()
-	app.Name = "kaniko docker plugin"
-	app.Usage = "kaniko docker plugin"
+	app.Name = "kaniko gar plugin"
+	app.Usage = "kaniko gar plugin"
 	app.Action = run
-	app.Version = pluginVersion
+	app.Version = version
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:   "dockerfile",
@@ -110,13 +108,8 @@ func main() {
 		},
 		cli.StringFlag{
 			Name:   "repo",
-			Usage:  "docker repository",
+			Usage:  "gar repository",
 			EnvVar: "PLUGIN_REPO",
-		},
-		cli.BoolFlag{
-			Name:   "create-repository",
-			Usage:  "create ACR repository",
-			EnvVar: "PLUGIN_CREATE_REPOSITORY",
 		},
 		cli.StringSliceFlag{
 			Name:   "custom-labels",
@@ -125,13 +118,8 @@ func main() {
 		},
 		cli.StringFlag{
 			Name:   "registry",
-			Usage:  "ACR registry",
+			Usage:  "gar registry",
 			EnvVar: "PLUGIN_REGISTRY",
-		},
-		cli.StringFlag{
-			Name:   "base-image-registry",
-			Usage:  "Docker registry for base image",
-			EnvVar: "PLUGIN_DOCKER_REGISTRY,PLUGIN_BASE_IMAGE_REGISTRY,DOCKER_REGISTRY",
 		},
 		cli.StringFlag{
 			Name:   "base-image-username",
@@ -143,50 +131,25 @@ func main() {
 			Usage:  "Docker password for base image registry",
 			EnvVar: "PLUGIN_DOCKER_PASSWORD,PLUGIN_BASE_IMAGE_PASSWORD,DOCKER_PASSWORD",
 		},
+		cli.StringFlag{
+			Name:   "base-image-registry",
+			Usage:  "Docker registry for base image registry",
+			EnvVar: "PLUGIN_DOCKER_REGISTRY,PLUGIN_BASE_IMAGE_REGISTRY,DOCKER_REGISTRY",
+		},
 		cli.StringSliceFlag{
 			Name:   "registry-mirrors",
 			Usage:  "docker registry mirrors",
 			EnvVar: "PLUGIN_REGISTRY_MIRRORS",
 		},
 		cli.StringFlag{
-			Name:   "client-secret",
-			Usage:  "Azure client secret",
-			EnvVar: "CLIENT_SECRET",
-		},
-		cli.StringFlag{
-			Name:   "client-cert",
-			Usage:  "Azure client certificate encoded in base64 format",
-			EnvVar: "CLIENT_CERTIFICATE",
-		},
-		cli.StringFlag{
-			Name:   "tenant-id",
-			Usage:  "Azure Tenant Id",
-			EnvVar: "TENANT_ID",
-		},
-		cli.StringFlag{
-			Name:   "subscription-id",
-			Usage:  "Azure Subscription Id",
-			EnvVar: "SUBSCRIPTION_ID",
-		},
-		cli.StringFlag{
-			Name:   "client-id",
-			Usage:  "Azure Client Id",
-			EnvVar: "CLIENT_ID",
+			Name:   "json-key",
+			Usage:  "docker username",
+			EnvVar: "PLUGIN_JSON_KEY",
 		},
 		cli.StringFlag{
 			Name:   "snapshot-mode",
 			Usage:  "Specify one of full, redo or time as snapshot mode",
 			EnvVar: "PLUGIN_SNAPSHOT_MODE",
-		},
-		cli.StringFlag{
-			Name:   "lifecycle-policy",
-			Usage:  "Path to lifecycle policy file",
-			EnvVar: "PLUGIN_LIFECYCLE_POLICY",
-		},
-		cli.StringFlag{
-			Name:   "repository-policy",
-			Usage:  "Path to repository policy file",
-			EnvVar: "PLUGIN_REPOSITORY_POLICY",
 		},
 		cli.BoolFlag{
 			Name:   "enable-cache",
@@ -230,7 +193,7 @@ func main() {
 		},
 		cli.StringFlag{
 			Name:   "verbosity",
-			Usage:  "Set this flag with value as oneof <panic|fatal|error|warn|info|debug|trace> to set the logging level for kaniko. Defaults to info.",
+			Usage:  "Set this flag as --verbosity=<panic|fatal|error|warn|info|debug|trace> to set the logging level for kaniko. Defaults to info.",
 			EnvVar: "PLUGIN_VERBOSITY",
 		},
 		cli.StringFlag{
@@ -284,7 +247,7 @@ func main() {
 			Usage:  "Force building the image even if it already exists.",
 			EnvVar: "PLUGIN_FORCE",
 		},
-		cli.StringSliceFlag{
+		cli.StringFlag{
 			Name:   "image-name-with-digest-file",
 			Usage:  "Write image name with digest to a file.",
 			EnvVar: "PLUGIN_IMAGE_NAME_WITH_DIGEST_FILE",
@@ -402,28 +365,31 @@ func main() {
 }
 
 func run(c *cli.Context) error {
-	// Check if push-only flag is set
+	// Check if this is a push-only operation
 	if c.Bool("push-only") {
 		return handlePushOnly(c)
 	}
 
-	registry := c.String("registry")
 	noPush := c.Bool("no-push")
+	jsonKey := c.String("json-key")
+	// JSON key may not be set in the following cases:
+	// 1. Image does not need to be pushed to GAR.
+	// 2. Workload identity is set on GKE in which pod will inherit the credentials via service account.
+	if jsonKey != "" {
+		if err := setupGARAuth(jsonKey); err != nil {
+			return err
+		}
 
-	publicUrl, err := setupAuth(
-		c.String("tenant-id"),
-		c.String("client-id"),
-		c.String("client-cert"),
-		c.String("client-secret"),
-		c.String("subscription-id"),
-		registry,
-		c.String("base-image-username"),
-		c.String("base-image-password"),
-		c.String("base-image-registry"),
-		noPush,
-	)
-	if err != nil {
-		return err
+		// setup docker config only when base image registry is specified
+		if c.String("base-image-registry") != "" {
+			if err := setDockerAuth(
+				c.String("base-image-username"),
+				c.String("base-image-password"),
+				c.String("base-image-registry"),
+			); err != nil {
+				return errors.Wrap(err, "failed to create docker config")
+			}
+		}
 	}
 
 	plugin := kaniko.Plugin{
@@ -439,7 +405,7 @@ func run(c *cli.Context) error {
 			Args:                        c.StringSlice("args"),
 			ArgsFromEnv:                 c.StringSlice("args-from-env"),
 			Target:                      c.String("target"),
-			Repo:                        c.String("repo"),
+			Repo:                        fmt.Sprintf("%s/%s", c.String("registry"), c.String("repo")),
 			Mirrors:                     c.StringSlice("registry-mirrors"),
 			Labels:                      c.StringSlice("custom-labels"),
 			SnapshotMode:                c.String("snapshot-mode"),
@@ -448,6 +414,9 @@ func run(c *cli.Context) error {
 			CacheTTL:                    c.Int("cache-ttl"),
 			DigestFile:                  defaultDigestFile,
 			NoPush:                      noPush,
+			PushOnly:                    c.Bool("push-only"),
+			SourceTarPath:               c.String("source-tar-path"),
+			TarPath:                     c.String("tar-path"),
 			Verbosity:                   c.String("verbosity"),
 			Platform:                    c.String("platform"),
 			SkipUnusedStages:            c.Bool("skip-unused-stages"),
@@ -486,9 +455,9 @@ func run(c *cli.Context) error {
 		Artifact: kaniko.Artifact{
 			Tags:         c.StringSlice("tags"),
 			Repo:         c.String("repo"),
-			Registry:     publicUrl, // this is public url on which the artifact can be seen
+			Registry:     c.String("registry"),
 			ArtifactFile: c.String("artifact-file"),
-			RegistryType: artifact.Docker,
+			RegistryType: artifact.GAR,
 		},
 	}
 	if c.IsSet("compressed-caching") {
@@ -499,237 +468,32 @@ func run(c *cli.Context) error {
 		flag := c.Bool("ignore-var-run")
 		plugin.Build.IgnoreVarRun = &flag
 	}
-
-	// Set tar-path if provided
-	if c.IsSet("tar-path") {
-		plugin.Build.TarPath = c.String("tar-path")
-	}
-
 	return plugin.Exec()
 }
 
-func setupAuth(tenantId, clientId, cert,
-	clientSecret, subscriptionId, registry, dockerUsername, dockerPassword, dockerRegistry string, noPush bool) (string, error) {
-	if registry == "" {
-		return "", fmt.Errorf("registry must be specified")
-	}
-
-	// case of client secret or cert based auth
-	if clientId != "" {
-		// only setup auth when pushing or credentials are defined
-
-		token, publicUrl, err := getACRToken(subscriptionId, tenantId, clientId, clientSecret, cert, registry)
-		if err != nil {
-			if noPush {
-				logrus.Warnf("NO_PUSH mode: failed to fetch ACR Token: %v", err)
-				return "", nil
-			}
-			return "", errors.Wrap(err, "failed to fetch ACR Token")
-		}
-
-		// setup docker config for azure registry and base image docker registry
-		if err := setDockerAuth(username, token, registry, dockerUsername, dockerPassword, dockerRegistry); err != nil {
-			if noPush {
-				logrus.Warnf("NO_PUSH mode: failed to create docker config: %v", err)
-				return "", nil
-			}
-			return "", errors.Wrap(err, "failed to create docker config")
-		}
-		return publicUrl, nil
-	} else {
-		if noPush {
-			return "", nil
-		}
-		return "", fmt.Errorf("managed authentication is not supported")
-	}
-}
-
-func getACRToken(subscriptionId, tenantId, clientId, clientSecret, cert, registry string) (string, string, error) {
-	if tenantId == "" {
-		return "", "", fmt.Errorf("tenantId can't be empty for AAD authentication")
-	}
-
-	if clientId == "" {
-		return "", "", fmt.Errorf("clientId can't be empty for AAD authentication")
-	}
-
-	if clientSecret == "" && cert == "" {
-		return "", "", fmt.Errorf("one of client secret or cert should be defined")
-	}
-
-	// in case of authentication via cert
-	if cert != "" {
-		err := setupACRCert(cert)
-		if err != nil {
-			errors.Wrap(err, "failed to push setup cert file")
-		}
-	}
-
-	if err := os.Setenv(clientIdEnv, clientId); err != nil {
-		return "", "", errors.Wrap(err, "failed to set env variable client Id")
-	}
-	if err := os.Setenv(clientSecretKeyEnv, clientSecret); err != nil {
-		return "", "", errors.Wrap(err, "failed to set env variable client secret")
-	}
-	if err := os.Setenv(tenantKeyEnv, tenantId); err != nil {
-		return "", "", errors.Wrap(err, "failed to set env variable tenant Id")
-	}
-	if err := os.Setenv(certPathEnv, ACRCertPath); err != nil {
-		return "", "", errors.Wrap(err, "failed to set env variable cert path")
-	}
-	env, err := azidentity.NewEnvironmentCredential(nil)
-	if err != nil {
-		return "", "", errors.Wrap(err, "failed to get env credentials from azure")
-	}
-
-	policy := policy.TokenRequestOptions{
-		Scopes: []string{"https://management.azure.com/.default"},
-	}
-	os.Unsetenv(clientIdEnv)
-	os.Unsetenv(clientSecretKeyEnv)
-	os.Unsetenv(tenantKeyEnv)
-	os.Unsetenv(certPathEnv)
-
-	azToken, err := env.GetToken(context.Background(), policy)
-	if err != nil {
-		return "", "", errors.Wrap(err, "failed to fetch access token")
-	}
-
-	publicUrl, err := getPublicUrl(azToken.Token, registry, subscriptionId)
-	if err != nil {
-		// execution should not fail because of this error.
-		fmt.Fprintf(os.Stderr, "failed to get public url with error: %s\n", err)
-	}
-
-	ACRToken, err := fetchACRToken(tenantId, azToken.Token, registry)
-	if err != nil {
-		return "", "", errors.Wrap(err, "failed to fetch ACR token")
-	}
-	return ACRToken, publicUrl, nil
-}
-
-func fetchACRToken(tenantId, token, registry string) (string, error) {
-	formData := url.Values{
-		"grant_type":   {"access_token"},
-		"service":      {registry},
-		"tenant":       {tenantId},
-		"access_token": {token},
-	}
-	jsonResponse, err := http.PostForm(fmt.Sprintf("https://%s/oauth2/exchange", registry), formData)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to fetch ACR token")
-	}
-	var response map[string]interface{}
-	err = json.NewDecoder(jsonResponse.Body).Decode(&response)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to decode oauth exchange response")
-	}
-
-	if x, found := response["refresh_token"]; found {
-		s, ok := x.(string)
-		if !ok {
-			errors.New("failed to cast refresh token from acr")
-		} else {
-			return s, nil
-		}
-	} else {
-		return "", errors.Wrap(err, "refresh token not found in response of oauth exchange call")
-	}
-	return "", errors.New("failed to get refresh token from acr")
-}
-
-func setupACRCert(cert string) error {
-	decoded, err := base64.StdEncoding.DecodeString(cert)
-	if err != nil {
-		return errors.Wrap(err, "failed to base64 decode ACR certificate")
-	}
-	err = ioutil.WriteFile(ACRCertPath, []byte(decoded), 0644)
-	if err != nil {
-		return errors.Wrap(err, "failed to write ACR certificate")
-	}
-	return nil
-}
-
-func getPublicUrl(token, registryUrl, subscriptionId string) (string, error) {
-	// for backward compatibilty, if the subscription id is not defined, do not fail step.
-	if len(subscriptionId) == 0 {
-		return "", nil
-	}
-
-	registry := strings.Split(registryUrl, ".")[0]
-	baseURL := "https://management.azure.com/subscriptions/" +
-		subscriptionId + "/resources?$filter=resourceType%20eq%20'Microsoft.ContainerRegistry/registries'%20and%20name%20eq%20'" +
-		registry + "'&api-version=2021-04-01&$select=id"
-
-	method := "GET"
-	client := &http.Client{}
-
-	cnt := 0
-
-	for {
-		// this is just in case we end up cycling through nextLink's infinitely.
-		// this should not happen - added as a precaution.
-		if cnt > maxPageCount {
-			break
-		}
-		cnt++
-		req, err := http.NewRequest(method, baseURL, nil)
-		if err != nil {
-			return "", errors.Wrap(err, "failed to create request for getting container registry setting")
-		}
-
-		req.Header.Add("Authorization", "Bearer "+token)
-		res, err := client.Do(req)
-		if err != nil {
-			return "", errors.Wrap(err, "failed to send request for getting container registry setting")
-		}
-		defer res.Body.Close()
-
-		var response strct
-		err = json.NewDecoder(res.Body).Decode(&response)
-		if err != nil {
-			return "", errors.Wrap(err, "failed to send request for getting container registry setting")
-		}
-
-		if len(response.Value) > 0 {
-			if response.Value[0].ID == "" { // should not happen
-				return "", errors.New("received empty registry ID from /subscriptions API")
-			}
-			return finalUrl + encodeParam(response.Value[0].ID), nil
-		}
-
-		if response.NextLink == "" {
-			// No more pages, break the loop
-			break
-		}
-
-		baseURL = response.NextLink
-	}
-
-	return "", errors.New("did not receive any registry information from /subscriptions API")
-}
-
-func setDockerAuth(username, password, registry, dockerUsername, dockerPassword, dockerRegistry string) error {
+func setDockerAuth(dockerUsername, dockerPassword, dockerRegistry string) error {
 	dockerConfig := docker.NewConfig()
-	pushToRegistryCreds := docker.RegistryCredentials{
-		Registry: registry,
-		Username: username,
-		Password: password,
-	}
-
-	pullFromRegistryCreds := docker.RegistryCredentials{
+	dockerRegistryCreds := docker.RegistryCredentials{
 		Registry: dockerRegistry,
 		Username: dockerUsername,
 		Password: dockerPassword,
 	}
+	credentials := []docker.RegistryCredentials{dockerRegistryCreds}
 
-	credentials := []docker.RegistryCredentials{pushToRegistryCreds, pullFromRegistryCreds}
 	return dockerConfig.CreateDockerConfig(credentials, dockerConfigPath)
-
 }
 
-func encodeParam(s string) string {
-	return url.QueryEscape(s)
+func setupGARAuth(jsonKey string) error {
+	err := ioutil.WriteFile(garKeyPath, []byte(jsonKey), 0644)
+	if err != nil {
+		return errors.Wrap(err, "failed to write GAR JSON key")
+	}
+
+	err = os.Setenv(garEnvVariable, garKeyPath)
+	if err != nil {
+		return errors.Wrap(err, fmt.Sprintf("failed to set %s environment variable", garEnvVariable))
+	}
+	return nil
 }
 
 func handlePushOnly(c *cli.Context) error {
@@ -749,46 +513,77 @@ func handlePushOnly(c *cli.Context) error {
 		return fmt.Errorf("repository and registry must be specified for push-only operation")
 	}
 
-	// Setup ACR authentication
-	publicUrl, err := setupAuth(
-		c.String("tenant-id"),
-		c.String("client-id"),
-		c.String("client-cert"),
-		c.String("client-secret"),
-		c.String("subscription-id"),
-		registry,
-		c.String("base-image-username"),
-		c.String("base-image-password"),
-		c.String("base-image-registry"),
-		false, // We want to push in push-only mode
-	)
-	if err != nil {
-		return err
+	// Authentication options for crane
+	var opts []crane.Option
+
+	// Setup GAR authentication
+	jsonKey := c.String("json-key")
+	if jsonKey != "" {
+		if err := setupGARAuth(jsonKey); err != nil {
+			return err
+		}
+
+		logrus.Info("Setting up authentication for GAR")
+
+		// Create Docker config directory if it doesn't exist
+		dockerConfigDir := "/kaniko/.docker"
+		if err := os.MkdirAll(dockerConfigDir, 0755); err != nil {
+			return fmt.Errorf("failed to create Docker config directory: %v", err)
+		}
+
+		// Generate a Docker config with GAR auth
+		type DockerAuth struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Auth     string `json:"auth"`
+		}
+
+		type DockerConfig struct {
+			Auths map[string]DockerAuth `json:"auths"`
+		}
+
+		// Create proper Auth field (base64 encoded username:password)
+		username := "_json_key"
+		authString := base64.StdEncoding.EncodeToString([]byte(username + ":" + jsonKey))
+
+		// Use _json_key as username and the key content as password for GAR
+		config := DockerConfig{
+			Auths: map[string]DockerAuth{
+				registry: {
+					Username: username,
+					Password: jsonKey,
+					Auth:     authString,
+				},
+			},
+		}
+
+		// Write the Docker config
+		configBytes, err := json.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to marshal Docker config: %v", err)
+		}
+
+		dockerConfigPath := filepath.Join(dockerConfigDir, "config.json")
+		if err := ioutil.WriteFile(dockerConfigPath, configBytes, 0644); err != nil {
+			return fmt.Errorf("failed to write Docker config: %v", err)
+		}
+
+		// Explicitly set DOCKER_CONFIG environment variable to ensure crane finds the config
+		if err := os.Setenv("DOCKER_CONFIG", dockerConfigDir); err != nil {
+			return fmt.Errorf("failed to set DOCKER_CONFIG environment variable: %v", err)
+		}
+
+		// Set up crane to use basic auth with docker config
+		opts = append(opts, crane.WithAuthFromKeychain(authn.DefaultKeychain))
+	} else {
+		logrus.Warn("No JSON key provided, authentication may fail if not running with workload identity")
 	}
 
 	// Load the image from the tarball
 	logrus.Infof("Loading image from tarball: %s", sourceTarPath)
-
 	img, err := crane.Load(sourceTarPath)
 	if err != nil {
 		return fmt.Errorf("failed to load image from tarball: %v", err)
-	}
-
-	// Check if the Docker config directory exists (should have been created by setupAuth)
-	if _, err := os.Stat(dockerConfigPath); os.IsNotExist(err) {
-		return fmt.Errorf("Docker config directory does not exist: %v", err)
-	} else if err != nil {
-		return fmt.Errorf("error checking Docker config directory: %v", err)
-	}
-
-	// Explicitly set DOCKER_CONFIG environment variable to ensure crane finds the config
-	if err := os.Setenv("DOCKER_CONFIG", dockerConfigPath); err != nil {
-		return fmt.Errorf("failed to set DOCKER_CONFIG environment variable: %v", err)
-	}
-
-	// Setup crane options
-	opts := []crane.Option{
-		crane.WithAuthFromKeychain(authn.DefaultKeychain),
 	}
 
 	// Push for each tag
@@ -797,17 +592,8 @@ func handlePushOnly(c *cli.Context) error {
 		tags = []string{"latest"}
 	}
 
-	// Use the registry from setupAuth if publicUrl is available, otherwise use the provided registry
-	pushRegistry := registry
-	if publicUrl != "" {
-		logrus.Infof("Using public URL for pushing: %s", publicUrl)
-		// Extract just the registry part from the full URL if needed
-		// This depends on the format of publicUrl, adjust parsing as needed
-		pushRegistry = publicUrl
-	}
-
 	for _, tag := range tags {
-		dest := fmt.Sprintf("%s/%s:%s", pushRegistry, repo, tag)
+		dest := fmt.Sprintf("%s/%s:%s", registry, repo, tag)
 		logrus.Infof("Pushing image to: %s", dest)
 
 		if err := crane.Push(img, dest, opts...); err != nil {
@@ -818,11 +604,4 @@ func handlePushOnly(c *cli.Context) error {
 	}
 
 	return nil
-}
-
-type strct struct {
-	Value []struct {
-		ID string `json:"id"`
-	} `json:"value"`
-	NextLink string `json:"nextLink"` // for pagination
 }
