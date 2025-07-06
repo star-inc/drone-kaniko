@@ -128,6 +128,11 @@ func main() {
 			Usage:  "build args",
 			EnvVar: "PLUGIN_BUILD_ARGS",
 		},
+		cli.StringSliceFlag{
+			Name:   "args-from-env",
+			Usage:  "build args from env",
+			EnvVar: "PLUGIN_BUILD_ARGS_FROM_ENV",
+		},
 		cli.GenericFlag{
 			Name:   "args-new",
 			Usage:  "build args new",
@@ -495,31 +500,6 @@ func run(c *cli.Context) error {
 
 	plugin := kaniko.Plugin{
 		Build: kaniko.Build{
-<<<<<<< HEAD
-			DroneCommitRef:   c.String("drone-commit-ref"),
-			DroneRepoBranch:  c.String("drone-repo-branch"),
-			Dockerfile:       c.String("dockerfile"),
-			Context:          c.String("context"),
-			Tags:             c.StringSlice("tags"),
-			AutoTag:          c.Bool("auto-tag"),
-			AutoTagSuffix:    c.String("auto-tag-suffix"),
-			ExpandTag:        c.Bool("expand-tag"),
-			Args:             c.StringSlice("args"),
-			ArgsFromEnv:      c.StringSlice("args-from-env"),
-			Target:           c.String("target"),
-			Repo:             fmt.Sprintf("%s/%s", c.String("registry"), c.String("repo")),
-			Mirrors:          c.StringSlice("registry-mirrors"),
-			Labels:           c.StringSlice("custom-labels"),
-			SnapshotMode:     c.String("snapshot-mode"),
-			EnableCache:      c.Bool("enable-cache"),
-			CacheRepo:        fmt.Sprintf("%s/%s", c.String("registry"), c.String("cache-repo")),
-			CacheTTL:         c.Int("cache-ttl"),
-			DigestFile:       defaultDigestFile,
-			NoPush:           noPush,
-			Verbosity:        c.String("verbosity"),
-			Platform:         c.String("platform"),
-			SkipUnusedStages: c.Bool("skip-unused-stages"),
-=======
 			DroneCommitRef:              c.String("drone-commit-ref"),
 			DroneRepoBranch:             c.String("drone-repo-branch"),
 			Dockerfile:                  c.String("dockerfile"),
@@ -529,6 +509,7 @@ func run(c *cli.Context) error {
 			AutoTagSuffix:               c.String("auto-tag-suffix"),
 			ExpandTag:                   c.Bool("expand-tag"),
 			Args:                        c.StringSlice("args"),
+			ArgsFromEnv:                 c.StringSlice("args-from-env"),
 			ArgsNew:                     c.Generic("args-new").(*CustomStringSliceFlag).GetValue(),
 			IsMultipleBuildArgs:         c.Bool("plugin-multiple-build-agrs"),
 			Target:                      c.String("target"),
@@ -578,7 +559,6 @@ func run(c *cli.Context) error {
 			TarPath:                     c.String("tar-path"),
 			SourceTarPath:               c.String("source-tar-path"),
 			PushOnly:                    c.Bool("push-only"),
->>>>>>> upstream
 		},
 		Artifact: kaniko.Artifact{
 			Tags:         c.StringSlice("tags"),

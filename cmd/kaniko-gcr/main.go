@@ -18,8 +18,8 @@ import (
 const (
 	dockerConfigPath string = "/kaniko/.docker"
 	// GCR JSON key file path
-	gcrKeyPath       string = "/kaniko/config.json"
-	gcrEnvVariable   string = "GOOGLE_APPLICATION_CREDENTIALS"
+	gcrKeyPath     string = "/kaniko/config.json"
+	gcrEnvVariable string = "GOOGLE_APPLICATION_CREDENTIALS"
 
 	defaultDigestFile string = "/kaniko/digest-file"
 )
@@ -358,7 +358,7 @@ func run(c *cli.Context) error {
 		}
 
 		// setup docker config only when base image registry is specified
-		if c.String("base-image-registry") != ""{
+		if c.String("base-image-registry") != "" {
 			if err := setDockerAuth(
 				c.String("base-image-username"),
 				c.String("base-image-password"),
@@ -380,6 +380,7 @@ func run(c *cli.Context) error {
 			AutoTagSuffix:               c.String("auto-tag-suffix"),
 			ExpandTag:                   c.Bool("expand-tag"),
 			Args:                        c.StringSlice("args"),
+			ArgsFromEnv:                 c.StringSlice("args-from-env"),
 			Target:                      c.String("target"),
 			Repo:                        fmt.Sprintf("%s/%s", c.String("registry"), c.String("repo")),
 			Mirrors:                     c.StringSlice("registry-mirrors"),
@@ -444,7 +445,7 @@ func run(c *cli.Context) error {
 	return plugin.Exec()
 }
 
-func setDockerAuth(dockerUsername, dockerPassword, dockerRegistry string) (error) {
+func setDockerAuth(dockerUsername, dockerPassword, dockerRegistry string) error {
 	dockerConfig := docker.NewConfig()
 	dockerRegistryCreds := docker.RegistryCredentials{
 		Registry: dockerRegistry,

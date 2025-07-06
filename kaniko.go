@@ -21,6 +21,7 @@ type (
 	// Build defines Docker build parameters.
 	Build struct {
 		Args                []string // Docker build args
+		ArgsFromEnv         []string // Docker build args from env
 		ArgsNew             []string // docker build args with comma seperated values
 		AutoTag             bool     // Set this to auto detect tags from git commits and semver-tagged labels
 		AutoTagSuffix       string   // Suffix to append to the auto detect tags

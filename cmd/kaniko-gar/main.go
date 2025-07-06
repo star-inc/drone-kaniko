@@ -96,6 +96,11 @@ func main() {
 			Usage:  "build args",
 			EnvVar: "PLUGIN_BUILD_ARGS",
 		},
+		cli.StringSliceFlag{
+			Name:   "args-from-env",
+			Usage:  "build args from env",
+			EnvVar: "PLUGIN_BUILD_ARGS_FROM_ENV",
+		},
 		cli.StringFlag{
 			Name:   "target",
 			Usage:  "build target",
@@ -398,6 +403,7 @@ func run(c *cli.Context) error {
 			AutoTagSuffix:               c.String("auto-tag-suffix"),
 			ExpandTag:                   c.Bool("expand-tag"),
 			Args:                        c.StringSlice("args"),
+			ArgsFromEnv:                 c.StringSlice("args-from-env"),
 			Target:                      c.String("target"),
 			Repo:                        fmt.Sprintf("%s/%s", c.String("registry"), c.String("repo")),
 			Mirrors:                     c.StringSlice("registry-mirrors"),
